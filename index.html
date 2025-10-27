@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shift & Tips Tracker</title>
+  <!-- Tailwind (Play CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 + ReactDOM (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel so we can write JSX in a single file -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Chart.js for charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    @media print { .no-print { display: none !important; } .page { box-shadow: none !important; } }
+    .page { box-shadow: 0 10px 30px rgba(0,0,0,0.06); }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ====== CONFIG ======
+    const HOURLY_RATE = 8; // $/hr
+
+    // ====== Helpers ======
+    const uid = () => Math.random().toString(36).slice(2, 10);
+    function parseTimeToMinutes(t){ if(!t) return null; const m=t.match(/^(\d{1,2}):(\d{2})$/); if(!m) return null; const hh=+m[1], mm=+m[2]; if(hh<0||hh>23||mm<0||mm>59) return null; return hh*60+mm; }
+    function hoursBetween(start,end){ const a=parseTimeToMinutes(start), b=parseTimeToMinutes(end); if(a==null||b==null) return 0; return +((((b-a+1440)%1440)/60).toFixed(2)); }
+    function currency(n){ return (n||0).toLocaleString(undefined,{style:"currency",currency:"USD"}); }
+    function monthKey(dateISO){ if(!dateISO) return ""; const d=new Date(dateISO+"T00:00:00"); if(isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
+    function exportCSV(shifts){ const headers=["Date","Start","End","Tips via Account (Gross)","Cash Tips","Big Bills Total","Products Sold","Additional Notes","Hours","Hourly Pay","Net Account Tips (85%)","Net Big Bills (10%)","Product Commission ($1 each)","Total Pay"]; const rows=shifts.map(s=>{ const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return [s.date,s.start,s.end,s.tipsAccount,s.cashTips,s.bigBills,s.products,s.notes||"",hrs,hourly,netAcc,netBig,prod,total];}); const esc=v=>typeof v==="string"?'"'+v.replaceAll('"','""')+'"':String(v); return [headers,...rows].map(r=>r.map(esc).join(",")).join("\n"); }
+    function todayISO(){ return new Date().toISOString().slice(0,10); }
+    function firstOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),1); return x.toISOString().slice(0,10); }
+    function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
+
+    // ====== Google Sheets sync (optional) ======
+    async function sheetsGET(apiUrl, token){ if(!apiUrl) throw new Error("No Sheets URL set"); const res = await fetch(apiUrl, { headers: token ? { 'X-Token': token } : {} }); return await res.json(); }
+    async function sheetsPOST(apiUrl, token, item){ if(!apiUrl) throw new Error("No Sheets URL set"); const res = await fetch(apiUrl, { method:'POST', headers:{ 'Content-Type':'application/json', ...(token?{'X-Token':token}:{}) }, body: JSON.stringify(item) }); return await res.json(); }
+
+    function useChart(ctxRef, configFactory, deps){ const chartRef=React.useRef(null); useEffect(()=>{ if(!ctxRef.current) return; const ctx=ctxRef.current.getContext("2d"); if(chartRef.current){ chartRef.current.destroy(); chartRef.current=null; } chartRef.current=new Chart(ctx, configFactory()); return ()=>{ if(chartRef.current) chartRef.current.destroy(); }; }, deps); }
+
+    function App(){
+      const [shifts,setShifts]=useState(()=>{ try{return JSON.parse(localStorage.getItem('eyebrow_shifts'))||[]}catch{return[]} });
+      useEffect(()=>{ localStorage.setItem('eyebrow_shifts',JSON.stringify(shifts)); },[shifts]);
+
+      // Add Shift form now includes NOTES and fields are required
+      const [draft,setDraft]=useState({id:'',date:'',start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+
+      // Sheets settings (UI -> localStorage)
+      const [apiUrl,setApiUrl]=useState(localStorage.getItem('sheets_url')||"");
+      const [apiToken,setApiToken]=useState(localStorage.getItem('sheets_token')||"");
+      function saveSheetsSettings(){ localStorage.setItem('sheets_url',apiUrl.trim()); localStorage.setItem('sheets_token',apiToken.trim()); alert('Saved. Sync buttons are now active.'); }
+      function clearSheetsSettings(){ localStorage.removeItem('sheets_url'); localStorage.removeItem('sheets_token'); setApiUrl(""); setApiToken(""); }
+
+      // Reporting filters
+      const [from,setFrom]=useState(firstOfMonthISO());
+      const [to,setTo]=useState(lastOfMonthISO());
+      function withinRange(d){ if(!d) return false; if(from&&d<from) return false; if(to&&d>to) return false; return true; }
+      const filteredShifts=useMemo(()=>shifts.filter(s=>withinRange(s.date)),[shifts,from,to]);
+
+      const totals=useMemo(()=>filteredShifts.reduce((a,s)=>{const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return {hours:a.hours+hrs,hourlyPay:a.hourlyPay+hourly,netAcc:a.netAcc+netAcc,cash:a.cash+s.cashTips,netBig:a.netBig+netBig,prod:a.prod+prod,total:a.total+total};},{hours:0,hourlyPay:0,netAcc:0,cash:0,netBig:0,prod:0,total:0}),[filteredShifts]);
+
+      const monthly=useMemo(()=>{const m={}; for(const s of filteredShifts){const key=monthKey(s.date); const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; m[key]??={hours:0,pay:0,acc:0,cash:0,big:0,prod:0,total:0}; m[key].hours+=hrs; m[key].pay+=hourly; m[key].acc+=netAcc; m[key].cash+=s.cashTips; m[key].big+=netBig; m[key].prod+=prod; m[key].total+=total;} return Object.entries(m).filter(([k])=>!!k).sort((a,b)=>a[0].localeCompare(b[0])); },[filteredShifts]);
+
+      // Charts
+      const dailySeries=useMemo(()=>{const map=new Map(); for(const s of filteredShifts){ if(!s.date) continue; const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; map.set(s.date,(map.get(s.date)||0)+total);} const dates=Array.from(map.keys()).sort(); return {labels:dates, values:dates.map(d=>map.get(d))}; },[filteredShifts]);
+      const composition=useMemo(()=>({labels:["Hourly Pay","Net Account Tips","Cash Tips","Net Big Bills","Product Commission"], values:[totals.hourlyPay,totals.netAcc,totals.cash,totals.netBig,totals.prod]}),[totals]);
+      const lineRef=useRef(null), pieRef=useRef(null);
+      useChart(lineRef,()=>({type:'line',data:{labels:dailySeries.labels,datasets:[{label:'Total Pay by Day',data:dailySeries.values,tension:0.3}]},options:{responsive:true,plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}}),[dailySeries.labels.join(','),dailySeries.values.join(',')]);
+      useChart(pieRef,()=>({type:'pie',data:{labels:composition.labels,datasets:[{data:composition.values}]} ,options:{responsive:true,plugins:{legend:{position:'bottom'}}}}),[composition.values.join(',')]);
+
+      function validateDraft(){
+        const req = [ ['Date', draft.date], ['Start', draft.start], ['End', draft.end], ['Tips via Account (Gross)', draft.tipsAccount], ['Cash Tips', draft.cashTips], ['Big Bills Total', draft.bigBills], ['Products Sold', draft.products] ];
+        const missing = req.filter(([label, val]) => val === '' || val === null || (typeof val === 'number' && Number.isNaN(val)) ).map(([l])=>l);
+        if (missing.length){ alert('Please fill: ' + missing.join(', ')); return false; }
+        return true;
+      }
+      function addShift(){
+        if(!validateDraft()) return;
+        const id=uid();
+        setShifts(p=>[...p,{ id, date: draft.date, start: draft.start, end: draft.end, tipsAccount: +draft.tipsAccount, cashTips: +draft.cashTips, bigBills: +draft.bigBills, products: +draft.products, notes: (draft.notes||'').trim() }]);
+        setDraft({id:'',date:draft.date,start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+      }
+      function removeShift(id){ setShifts(p=>p.filter(s=>s.id!==id)); }
+      function clearAll(){ if(confirm('Clear all saved shifts?')) setShifts([]); }
+      function downloadCSV(){ const csv=exportCSV(filteredShifts); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.csv'; a.click(); URL.revokeObjectURL(url); }
+      function downloadJSON(){ const blob=new Blob([JSON.stringify(shifts,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.json'; a.click(); URL.revokeObjectURL(url); }
+      function uploadJSON(e){ const f=e.target.files?.[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try{ const data=JSON.parse(String(r.result)); if(!Array.isArray(data)) throw new Error('bad'); setShifts(data);}catch{ alert('Could not import this file'); } }; r.readAsText(f); }
+
+      async function loadFromSheets(){ try{ const data=await sheetsGET(apiUrl, apiToken); if(data.ok){ setShifts(data.items||[]); alert('Loaded from Google Sheets.'); } else alert('Sheets GET failed'); }catch(e){ alert('Sheets GET error: '+e.message); } }
+      async function saveNewToSheets(){ try{ const data=await sheetsGET(apiUrl, apiToken); const existing=new Set((data.items||[]).map(x=>x.id)); const toSend=shifts.filter(s=>!existing.has(s.id)); for(const s of toSend){ await sheetsPOST(apiUrl, apiToken, s);} alert(`Uploaded ${toSend.length} new shift(s).`); }catch(e){ alert('Sheets POST error: '+e.message); } }
+
+      return (
+        <div className="min-h-screen">
+          <div className="max-w-6xl mx-auto p-4 sm:p-6 page bg-slate-50">
+            {/* ===== Add Shift moved to TOP for mobile ===== */}
+            <section className="bg-white rounded-2xl shadow p-4 mb-6">
+              <h2 className="font-semibold mb-4">Add Shift</h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-sm mb-1">Date <span className="text-red-500">*</span></label>
+                  <input required type="date" value={draft.date} onChange={e=>setDraft({...draft, date:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Start <span className="text-red-500">*</span></label>
+                  <input required type="time" value={draft.start} onChange={e=>setDraft({...draft, start:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">End <span className="text-red-500">*</span></label>
+                  <input required type="time" value={draft.end} onChange={e=>setDraft({...draft, end:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Tips via Account (Gross) <span className="text-red-500">*</span></label>
+                  <input required type="number" step="0.01" value={draft.tipsAccount} onChange={e=>setDraft({...draft, tipsAccount:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Cash Tips <span className="text-red-500">*</span></label>
+                  <input required type="number" step="0.01" value={draft.cashTips} onChange={e=>setDraft({...draft, cashTips:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Big Bills Total <span className="text-red-500">*</span></label>
+                  <input required type="number" step="0.01" value={draft.bigBills} onChange={e=>setDraft({...draft, bigBills:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Products Sold <span className="text-red-500">*</span></label>
+                  <input required type="number" step="1" value={draft.products} onChange={e=>setDraft({...draft, products:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm mb-1">Additional Notes (optional)</label>
+                  <input type="text" value={draft.notes} onChange={e=>setDraft({...draft, notes:e.target.value})} placeholder="e.g., Brow laminations, regulars, promos, etc." className="w-full border rounded-xl px-3 py-2" />
+                </div>
+                <div className="flex items-end md:col-span-1">
+                  <button onClick={addShift} className="w-full px-3 py-2 rounded-2xl shadow bg-slate-900 text-white hover:bg-slate-800">Add</button>
+                </div>
+              </div>
+            </section>
+
+            {/* ===== Sheets Settings (UI) ===== */}
+            <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
+              <h2 className="font-semibold mb-1">Google Sheets Sync (optional)</h2>
+              <p className="text-xs text-slate-600 mb-3">Paste your Apps Script Web App URL and token here to enable cross-device syncing. (Make sure your Google Sheet has headers: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>.)</p>
+              <div className="grid md:grid-cols-3 gap-3">
+                <input type="url" placeholder="Web App URL (exec)" value={apiUrl} onChange={e=>setApiUrl(e.target.value)} className="border rounded-xl px-3 py-2" />
+                <input type="text" placeholder="X-Token (if set in script)" value={apiToken} onChange={e=>setApiToken(e.target.value)} className="border rounded-xl px-3 py-2" />
+                <div className="flex gap-2">
+                  <button onClick={saveSheetsSettings} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800">Save</button>
+                  <button onClick={clearSheetsSettings} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">Clear</button>
+                </div>
+              </div>
+            </section>
+
+            {/* ===== Report Filters ===== */}
+            <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
+              <h2 className="font-semibold mb-4">Report Filters</h2>
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
+                <div><label className="block text-sm mb-1">From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
+                <div><label className="block text-sm mb-1">To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
+                <div className="flex gap-2 md:col-span-4">
+                  <button onClick={()=>{setFrom(firstOfMonthISO()); setTo(lastOfMonthISO());}} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800">This Month</button>
+                  <button onClick={()=>{const now=new Date(); const prev=new Date(now.getFullYear(), now.getMonth()-1, 1); setFrom(firstOfMonthISO(prev)); setTo(lastOfMonthISO(prev));}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">Last Month</button>
+                  <button onClick={()=>{const now=new Date(); setFrom(`${now.getFullYear()}-01-01`); setTo(todayISO());}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">YTD</button>
+                  <button onClick={()=>{setFrom(""); setTo("");}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">All Time</button>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">{filteredShifts.length} shift(s) in range.</p>
+            </section>
+
+            {/* ===== Shifts Table & Sync Buttons ===== */}
+            <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold">Shifts (Filtered)</h2>
+                {apiUrl ? (
+                  <div className="no-print flex gap-2">
+                    <button onClick={loadFromSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100">Load from Sheets</button>
+                    <button onClick={saveNewToSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100">Save NEW to Sheets</button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500 no-print">(Paste your Sheets URL above to enable syncing)</div>
+                )}
+              </div>
+              <table className="min-w-full text-sm">
+                <thead><tr className="text-left border-b">
+                  <th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Start</th><th className="py-2 pr-3">End</th>
+                  <th className="py-2 pr-3">Acct Tips (Gross)</th><th className="py-2 pr-3">Cash Tips</th><th className="py-2 pr-3">Big Bills</th>
+                  <th className="py-2 pr-3">Products</th><th className="py-2 pr-3">Notes</th>
+                  <th className="py-2 pr-3">Hours</th><th className="py-2 pr-3">Hourly Pay</th>
+                  <th className="py-2 pr-3">Net Acct Tips</th><th className="py-2 pr-3">Net Big Bills</th><th className="py-2 pr-3">Prod Comm</th><th className="py-2 pr-3">Total</th><th className="no-print"></th>
+                </tr></thead>
+                <tbody>
+                  {filteredShifts.map((s)=>{const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return (
+                    <tr key={s.id} className="border-b last:border-0">
+                      <td className="py-2 pr-3">{s.date}</td>
+                      <td className="py-2 pr-3">{s.start}</td>
+                      <td className="py-2 pr-3">{s.end}</td>
+                      <td className="py-2 pr-3">{currency(s.tipsAccount)}</td>
+                      <td className="py-2 pr-3">{currency(s.cashTips)}</td>
+                      <td className="py-2 pr-3">{currency(s.bigBills)}</td>
+                      <td className="py-2 pr-3">{s.products}</td>
+                      <td className="py-2 pr-3">{s.notes||''}</td>
+                      <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
+                      <td className="py-2 pr-3">{currency(hourly)}</td>
+                      <td className="py-2 pr-3">{currency(netAcc)}</td>
+                      <td className="py-2 pr-3">{currency(netBig)}</td>
+                      <td className="py-2 pr-3">{currency(prod)}</td>
+                      <td className="py-2 pr-3 font-medium">{currency(total)}</td>
+                      <td className="py-2 pr-3 text-right no-print"><button onClick={()=>removeShift(s.id)} className="text-red-600 hover:underline">Delete</button></td>
+                    </tr> );})}
+                  {filteredShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="15">No shifts in this range.</td></tr>)}
+                </tbody>
+              </table>
+            </section>
+
+            {/* ===== Totals & Monthly ===== */}
+            <section className="grid md:grid-cols-2 gap-6 mb-6">
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-4">Totals (Filtered)</h2>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="text-slate-600">Total Hours</div><div className="font-medium">{totals.hours.toFixed(2)}</div>
+                  <div className="text-slate-600">Hourly Pay</div><div className="font-medium">{currency(totals.hourlyPay)}</div>
+                  <div className="text-slate-600">Net Account Tips</div><div className="font-medium">{currency(totals.netAcc)}</div>
+                  <div className="text-slate-600">Cash Tips</div><div className="font-medium">{currency(totals.cash)}</div>
+                  <div className="text-slate-600">Net Big Bills</div><div className="font-medium">{currency(totals.netBig)}</div>
+                  <div className="text-slate-600">Product Commission</div><div className="font-medium">{currency(totals.prod)}</div>
+                  <div className="text-slate-600">Total Pay</div><div className="font-bold">{currency(totals.total)}</div>
+                </div>
+              </div>
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-4">Monthly Breakdown (Filtered)</h2>
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left border-b"><th className="py-2 pr-3">Month</th><th className="py-2 pr-3">Hours</th><th className="py-2 pr-3">Pay</th><th className="py-2 pr-3">Acc Tips</th><th className="py-2 pr-3">Cash</th><th className="py-2 pr-3">Big Bills</th><th className="py-2 pr-3">Prod</th><th className="py-2 pr-3">Total</th></tr></thead>
+                  <tbody>
+                    {monthly.map(([m,v])=> (
+                      <tr key={m} className="border-b last:border-0">
+                        <td className="py-2 pr-3">{m}</td>
+                        <td className="py-2 pr-3">{v.hours.toFixed(2)}</td>
+                        <td className="py-2 pr-3">{currency(v.pay)}</td>
+                        <td className="py-2 pr-3">{currency(v.acc)}</td>
+                        <td className="py-2 pr-3">{currency(v.cash)}</td>
+                        <td className="py-2 pr-3">{currency(v.big)}</td>
+                        <td className="py-2 pr-3">{currency(v.prod)}</td>
+                        <td className="py-2 pr-3 font-medium">{currency(v.total)}</td>
+                      </tr>
+                    ))}
+                    {monthly.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="8">No data in this range.</td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            {/* ===== Charts ===== */}
+            <section className="grid md:grid-cols-2 gap-6 mb-6">
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-4">Chart: Total Pay by Day</h2>
+                <canvas id="lineChart" ref={lineRef} height="160"></canvas>
+              </div>
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-4">Chart: Pay Composition</h2>
+                <canvas id="pieChart" ref={pieRef} height="160"></canvas>
+              </div>
+            </section>
+
+            <footer className="no-print text-xs text-slate-500">
+              <p>Rates: $8/hr, 85% of account tips, 10% of big bills, $1/product. Change in code if needed.</p>
+              <p className="mt-1">Google Sheets headers must be: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>. Update your Apps Script to read/write the 9th column for <em>notes</em> (see below).</p>
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
