@@ -28,7 +28,7 @@
     const HOURLY_RATE = 8; // $/hr
 
     // Optional hard-coded defaults (leave empty if you prefer the UI fields)
-    const SHEETS_API_URL = "https://script.google.com/macros/s/AKfycbxNSciES1HKrMj-Ufjom-ZkEu7bsBcPRpf5E_Ai22GeXQJoy3KJi5SpwGwVXtzPO6pd/exec"; // e.g. "https://script.google.com/macros/s/AKfycb.../exec"
+    const SHEETS_API_URL = "https://script.google.com/macros/s/AKfycbwFvZm0-Da1oVkAsV0ZiJsaTUv2JN1WL4A3SOL4BJGRR0G750Myem-Gs8sVLI56ALdD/exec"; // e.g. "https://script.google.com/macros/s/AKfycb.../exec"
     const SHEETS_TOKEN   = "Aswini@2128"; // optional token; sent as ?token=... (no custom headers)
 
     // ====== Helpers ======
@@ -61,15 +61,20 @@
     const getToken = () => (SHEETS_TOKEN   || localStorage.getItem('sheets_token') || '');
 
     async function sheetsGET(){
-      const base = getUrl(); if(!base) throw new Error("No Sheets URL set");
-      const url = getToken() ? `${base}?token=${encodeURIComponent(getToken())}` : base;
+      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
+      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
       const res = await fetch(url);
-      return await res.json();
+      return await res.json(); // { ok, items: [{id,...}] }
     }
     async function sheetsPOST(item){
-      const base = getUrl(); if(!base) throw new Error("No Sheets URL set");
-      const url = getToken() ? `${base}?token=${encodeURIComponent(getToken())}` : base;
-      const res = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(item) });
+      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
+      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
+      // Use text/plain to avoid CORS preflight. Apps Script reads e.postData.contents.
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type':'text/plain' },
+        body: JSON.stringify(item)
+      });
       return await res.json();
     }
 
