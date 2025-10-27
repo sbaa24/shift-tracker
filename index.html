@@ -28,8 +28,8 @@
     const HOURLY_RATE = 8; // $/hr
 
     // Optional hard-coded defaults (leave empty if you prefer the UI fields)
-    const SHEETS_API_URL = ""; // e.g. "https://script.google.com/macros/s/AKfycb.../exec"
-    const SHEETS_TOKEN   = ""; // optional token; sent as ?token=... (no custom headers)
+    const SHEETS_API_URL = "https://script.google.com/macros/s/AKfycbwFvZm0-Da1oVkAsV0ZiJsaTUv2JN1WL4A3SOL4BJGRR0G750Myem-Gs8sVLI56ALdD/exec"; // e.g. "https://script.google.com/macros/s/AKfycb.../exec"
+    const SHEETS_TOKEN   = "Aswini@2128"; // optional token; sent as ?token=... (no custom headers)
 
     // ====== Helpers ======
     const uid = () => Math.random().toString(36).slice(2, 10);
@@ -57,37 +57,26 @@
     function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
 
     // ====== Google Sheets sync (UI + optional defaults) ======
-// Build URL from (state -> localStorage -> constants) and append token safely
-const buildSheetsUrl = React.useCallback(() => {
-  const base =
-    (SHEETS_API_URL || apiUrl || localStorage.getItem('sheets_url') || '').trim();
-  const tok =
-    (SHEETS_TOKEN   || apiToken || localStorage.getItem('sheets_token') || '').trim();
+    const getUrl   = () => (SHEETS_API_URL || localStorage.getItem('sheets_url')   || '');
+    const getToken = () => (SHEETS_TOKEN   || localStorage.getItem('sheets_token') || '');
 
-  if (!base) throw new Error('No Sheets URL set');
-
-  // Append token, respecting existing query params
-  const sep = base.includes('?') ? '&' : '?';
-  return tok ? `${base}${sep}token=${encodeURIComponent(tok)}` : base;
-}, [apiUrl, apiToken]);
-
-// GET (simple request)
-const sheetsGET = React.useCallback(async () => {
-  const url = buildSheetsUrl();
-  const res = await fetch(url);
-  return await res.json();
-}, [buildSheetsUrl]);
-
-// POST (simple request; text/plain avoids CORS preflight)
-const sheetsPOST = React.useCallback(async (item) => {
-  const url = buildSheetsUrl();
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(item),
-  });
-  return await res.json();
-}, [buildSheetsUrl]);
+    async function sheetsGET(){
+      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
+      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
+      const res = await fetch(url);
+      return await res.json(); // { ok, items: [{id,...}] }
+    }
+    async function sheetsPOST(item){
+      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
+      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
+      // Use text/plain to avoid CORS preflight. Apps Script reads e.postData.contents.
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type':'text/plain' },
+        body: JSON.stringify(item)
+      });
+      return await res.json();
+    }
 
     function useChart(ctxRef, configFactory, deps){
       const chartRef=React.useRef(null);
@@ -193,35 +182,8 @@ const sheetsPOST = React.useCallback(async (item) => {
       function downloadJSON(){ const blob=new Blob([JSON.stringify(shifts,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.json'; a.click(); URL.revokeObjectURL(url); }
       function uploadJSON(e){ const f=e.target.files?.[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try{ const data=JSON.parse(String(r.result)); if(!Array.isArray(data)) throw new Error('bad'); setShifts(data);}catch{ alert('Could not import this file'); } }; r.readAsText(f); }
 
-     async function loadFromSheets(){
-  try {
-    const data = await sheetsGET();
-    if (data.ok && Array.isArray(data.items)) {
-      setShifts(data.items);
-      alert(`Loaded ${data.items.length} shifts from Google Sheets.`);
-    } else {
-      alert('Sheets GET failed (see console).');
-      console.error('GET payload:', data);
-    }
-  } catch (e) {
-    alert('Sheets GET error: ' + e.message);
-    console.error(e);
-  }
-}
-
-async function saveNewToSheets(){
-  try {
-    const data = await sheetsGET();
-    const existing = new Set((data.items || []).map(x => x.id));
-    const toSend = shifts.filter(s => !existing.has(s.id));
-    for (const s of toSend) { await sheetsPOST(s); }
-    alert(`Uploaded ${toSend.length} new shift(s) to Google Sheets.`);
-  } catch (e) {
-    alert('Sheets POST error: ' + e.message);
-    console.error(e);
-  }
-}
-
+      async function loadFromSheets(){ try{ const data=await sheetsGET(); if(data.ok){ setShifts(data.items||[]); alert('Loaded from Google Sheets.'); } else alert('Sheets GET failed'); }catch(e){ alert('Sheets GET error: '+e.message); } }
+      async function saveNewToSheets(){ try{ const data=await sheetsGET(); const existing=new Set((data.items||[]).map(x=>x.id)); const toSend=shifts.filter(s=>!existing.has(s.id)); for(const s of toSend){ await sheetsPOST(s);} alert(`Uploaded ${toSend.length} new shift(s).`); }catch(e){ alert('Sheets POST error: '+e.message); } }
 
       // Total hours for Hours-only report
       const totalHours = useMemo(()=>filteredShifts.reduce((sum,s)=> sum + hoursBetween(s.start,s.end), 0),[filteredShifts]);
