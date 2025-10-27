@@ -4,18 +4,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Shift & Tips Tracker</title>
-  <!-- Tailwind (Play CDN) -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- React 18 + ReactDOM (UMD) -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <!-- Babel so we can write JSX in a single file -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Chart.js for charts -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <style>
     @media print { .no-print { display: none !important; } .page { box-shadow: none !important; } }
     .page { box-shadow: 0 10px 30px rgba(0,0,0,0.06); }
+    /* Styling for sort indicators */
+    .sort-header { cursor: pointer; user-select: none; }
+    .sort-indicator { display: inline-block; width: 0; height: 0; margin-left: 0.5rem; }
+    .sort-asc .sort-indicator { border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 4px solid #374151; }
+    .sort-desc .sort-indicator { border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 4px solid #374151; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
@@ -27,15 +28,14 @@
     // ====== CONFIG ======
     const HOURLY_RATE = 8; // $/hr
 
-    // Optional hard-coded defaults (leave empty if you prefer the UI fields)
-    const SHEETS_API_URL = "https://script.google.com/macros/s/AKfycbwFvZm0-Da1oVkAsV0ZiJsaTUv2JN1WL4A3SOL4BJGRR0G750Myem-Gs8sVLI56ALdD/exec"; // e.g. "https://script.google.com/macros/s/AKfycb.../exec"
-    const SHEETS_TOKEN   = "Aswini@2128"; // optional token; sent as ?token=... (no custom headers)
+    // Optional hard-coded defaults (Set these to "" if you want to use the UI fields)
+    const SHEETS_API_URL = ""; 
+    const SHEETS_TOKEN   = ""; 
 
     // ====== Helpers ======
     const uid = () => Math.random().toString(36).slice(2, 10);
     function parseTimeToMinutes(t){ if(!t) return null; const m=t.match(/^(\d{1,2}):(\d{2})$/); if(!m) return null; const hh=+m[1], mm=+m[2]; if(hh<0||hh>23||mm<0||mm>59) return null; return hh*60+mm; }
     function hoursBetween(start,end){ const a=parseTimeToMinutes(start), b=parseTimeToMinutes(end); if(a==null||b==null) return 0; return +((((b-a+1440)%1440)/60).toFixed(2)); }
-    function currency(n){ return (n||0).toLocaleString(undefined,{style:"currency",currency:"USD"}); }
     function monthKey(dateISO){ if(!dateISO) return ""; const d=new Date(dateISO+"T00:00:00"); if(isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
     function dayLabel(dateISO){ if(!dateISO) return ""; const d=new Date(dateISO+"T00:00:00"); return d.toLocaleDateString(undefined,{weekday:'short'}); }
     function exportCSV(shifts){
@@ -56,22 +56,154 @@
     function firstOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),1); return x.toISOString().slice(0,10); }
     function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
 
-    // ====== Google Sheets sync (UI + optional defaults) ======
-    const getUrl   = () => (SHEETS_API_URL || localStorage.getItem('sheets_url')   || '');
-    const getToken = () => (SHEETS_TOKEN   || localStorage.getItem('sheets_token') || '');
+    // ====== Sorting Logic ======
 
-    async function sheetsGET(){
-      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
-      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
-      const res = await fetch(url);
+    // Custom hook for sortable shifts tables
+    function useSortableShifts(items, initialSortKey = 'date', initialDirection = 'descending') {
+      const [sortConfig, setSortConfig] = useState({ key: initialSortKey, direction: initialDirection });
+
+      const sortedItems = useMemo(() => {
+        let sortableItems = [...items];
+        if (sortConfig.key !== null) {
+          sortableItems.sort((a, b) => {
+            let aValue = a[sortConfig.key];
+            let bValue = b[sortConfig.key];
+
+            // --- Calculation/Special Fields ---
+            if (['hours', 'hourlyPay', 'netAcc', 'netBig', 'prod', 'total'].includes(sortConfig.key)) {
+                const calculateValue = (s) => {
+                    const hrs = hoursBetween(s.start, s.end);
+                    const hourly = hrs * HOURLY_RATE;
+                    const netAcc = s.tipsAccount * 0.85;
+                    const netBig = s.bigBills * 0.10;
+                    const prod = s.products * 1;
+                    const total = hourly + netAcc + netBig + s.cashTips + prod;
+                    
+                    switch (sortConfig.key) {
+                        case 'hours': return hrs;
+                        case 'hourlyPay': return hourly;
+                        case 'netAcc': return netAcc;
+                        case 'netBig': return netBig;
+                        case 'prod': return prod;
+                        case 'total': return total;
+                        default: return 0;
+                    }
+                };
+                aValue = calculateValue(a);
+                bValue = calculateValue(b);
+            } else if (sortConfig.key === 'date') {
+                // Date sorting
+                aValue = new Date(a.date + 'T00:00:00');
+                bValue = new Date(b.date + 'T00:00:00');
+            } else if (sortConfig.key === 'start' || sortConfig.key === 'end') {
+                // Time sorting
+                aValue = parseTimeToMinutes(aValue);
+                bValue = parseTimeToMinutes(bValue);
+            } else if (typeof aValue === 'string') {
+                // Lexicographical sort for strings
+                aValue = aValue.toLowerCase();
+                bValue = bValue.toLowerCase();
+            }
+
+            // --- Comparison ---
+            let comparison = 0;
+            if (aValue < bValue) {
+              comparison = -1;
+            } else if (aValue > bValue) {
+              comparison = 1;
+            }
+            
+            return sortConfig.direction === 'ascending' ? comparison : comparison * -1;
+          });
+        }
+        return sortableItems;
+      }, [items, sortConfig]);
+
+      const requestSort = (key) => {
+        let direction = 'ascending';
+        if (sortConfig.key === key && sortConfig.direction === 'ascending') {
+          direction = 'descending';
+        } else if (sortConfig.key === key && sortConfig.direction === 'descending') {
+          // Reset to default sort after descending
+          key = initialSortKey;
+          direction = initialDirection;
+        }
+        setSortConfig({ key, direction });
+      };
+
+      const getSortClass = (key) => {
+        if (sortConfig.key !== key) return '';
+        return sortConfig.direction === 'ascending' ? 'sort-asc' : 'sort-desc';
+      };
+
+      return { sortedItems, requestSort, getSortClass, sortConfig };
+    }
+    
+    // Custom hook for Monthly Breakdown sorting (handles [key, value] array format)
+    function useSortableMonthly(items) {
+      const [sortConfig, setSortConfig] = useState({ key: 0, direction: 'ascending' }); // Key 0 is 'Month'
+
+      const sortedItems = useMemo(() => {
+        let sortableItems = [...items];
+        if (sortConfig.key !== null) {
+          sortableItems.sort((a, b) => {
+            let comparison = 0;
+            
+            // For Month (index 0), sort chronologically by key (YYYY-MM)
+            if (sortConfig.key === 0) {
+              comparison = a[0].localeCompare(b[0]);
+            } else {
+                // For calculated values (index 1, object keys)
+                const field = ['hours', 'pay', 'acc', 'cash', 'big', 'prod', 'total'][sortConfig.key - 1];
+                let aValue = a[1][field];
+                let bValue = b[1][field];
+                
+                if (aValue < bValue) {
+                  comparison = -1;
+                } else if (aValue > bValue) {
+                  comparison = 1;
+                }
+            }
+            
+            return sortConfig.direction === 'ascending' ? comparison : comparison * -1;
+          });
+        }
+        return sortableItems;
+      }, [items, sortConfig]);
+
+      const requestSort = (keyIndex) => {
+        let direction = 'ascending';
+        if (sortConfig.key === keyIndex && sortConfig.direction === 'ascending') {
+          direction = 'descending';
+        }
+        setSortConfig({ key: keyIndex, direction });
+      };
+      
+      const getSortClass = (keyIndex) => {
+        if (sortConfig.key !== keyIndex) return '';
+        return sortConfig.direction === 'ascending' ? 'sort-asc' : 'sort-desc';
+      };
+
+      return { sortedItems, requestSort, getSortClass };
+    }
+
+
+    // ====== Google Sheets sync (UI + optional defaults) ======
+    const getUrl   = (apiUrl) => (SHEETS_API_URL || apiUrl || localStorage.getItem('sheets_url')   || '');
+    const getToken = (apiToken) => (SHEETS_TOKEN   || apiToken || localStorage.getItem('sheets_token') || '');
+    
+    async function sheetsGET(url, token){
+      if(!url) throw new Error("No Sheets URL set. Paste it in the Google Sheets Sync section.");
+      const reqUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+      const res = await fetch(reqUrl);
       return await res.json(); // { ok, items: [{id,...}] }
     }
-    async function sheetsPOST(item){
-      if(!SHEETS_API_URL) throw new Error("No SHEETS_API_URL set");
-      const url = SHEETS_TOKEN ? `${SHEETS_API_URL}?token=${encodeURIComponent(SHEETS_TOKEN)}` : SHEETS_API_URL;
-      // Use text/plain to avoid CORS preflight. Apps Script reads e.postData.contents.
-      const res = await fetch(url, {
-        method: 'POST',
+    
+    async function sheetsPOSTorPUT(item, url, token){
+      if(!url) throw new Error("No Sheets URL set. Paste it in the Google Sheets Sync section.");
+      const reqUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+      const res = await fetch(reqUrl, {
+        method: 'POST', 
         headers: { 'Content-Type':'text/plain' },
         body: JSON.stringify(item)
       });
@@ -93,14 +225,30 @@
       const [shifts,setShifts]=useState(()=>{ try{return JSON.parse(localStorage.getItem('eyebrow_shifts'))||[]}catch{return[]} });
       useEffect(()=>{ localStorage.setItem('eyebrow_shifts',JSON.stringify(shifts)); },[shifts]);
 
-      // Add Shift (includes NOTES)
+      // State for current draft (for adding) AND for an item currently being edited
+      const [editId, setEditId] = useState(null); 
+      // Fixed: Ensure tipsAccount is initialized as an empty string to match input type="number" behavior
       const [draft,setDraft]=useState({id:'',date:'',start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
 
-      // Sheets settings (UI -> localStorage). Prefill from constants if present.
-      const [apiUrl,setApiUrl]=useState(getUrl());
-      const [apiToken,setApiToken]=useState(getToken());
-      function saveSheetsSettings(){ localStorage.setItem('sheets_url',apiUrl.trim()); localStorage.setItem('sheets_token',apiToken.trim()); alert('Saved. Sync buttons are now active.'); }
-      function clearSheetsSettings(){ localStorage.removeItem('sheets_url'); localStorage.removeItem('sheets_token'); setApiUrl(""); setApiToken(""); }
+      // Sheets settings (UI -> localStorage).
+      const [apiUrl,setApiUrl]=useState(() => getUrl());
+      const [apiToken,setApiToken]=useState(() => getToken());
+      
+      const activeUrl = useMemo(() => getUrl(apiUrl), [apiUrl]);
+      const activeToken = useMemo(() => getToken(apiToken), [apiToken]);
+
+      function saveSheetsSettings(){ 
+        localStorage.setItem('sheets_url',apiUrl.trim()); 
+        localStorage.setItem('sheets_token',apiToken.trim()); 
+        alert('Settings saved. Sync buttons are now active.'); 
+      }
+      function clearSheetsSettings(){ 
+        localStorage.removeItem('sheets_url'); 
+        localStorage.removeItem('sheets_token'); 
+        setApiUrl(""); 
+        setApiToken(""); 
+        alert('Settings cleared.');
+      }
 
       // Reporting filters
       const [from,setFrom]=useState(firstOfMonthISO());
@@ -108,6 +256,10 @@
       function withinRange(d){ if(!d) return false; if(from&&d<from) return false; if(to&&d>to) return false; return true; }
       const filteredShifts=useMemo(()=>shifts.filter(s=>withinRange(s.date)),[shifts,from,to]);
 
+      // --- Sorting Logic Hooks ---
+      // Note: Sorted shifts are calculated from filteredShifts
+      const { sortedItems: sortedShifts, requestSort: requestShiftSort, getSortClass: getShiftSortClass } = useSortableShifts(filteredShifts);
+      
       const totals=useMemo(()=>filteredShifts.reduce((a,s)=>{
         const hrs=hoursBetween(s.start,s.end);
         const hourly=hrs*HOURLY_RATE;
@@ -133,6 +285,9 @@
         }
         return Object.entries(m).filter(([k])=>!!k).sort((a,b)=>a[0].localeCompare(b[0]));
       },[filteredShifts]);
+
+      const { sortedItems: sortedMonthly, requestSort: requestMonthlySort, getSortClass: getMonthlySortClass } = useSortableMonthly(monthly);
+
 
       // Charts
       const dailySeries=useMemo(()=>{
@@ -165,86 +320,185 @@
         if (missing.length){ alert('Please fill: ' + missing.join(', ')); return false; }
         return true;
       }
+      
+      function resetDraft(){
+        setDraft({id:'',date:draft.date,start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+        setEditId(null);
+      }
+      
       function addShift(){
         if(!validateDraft()) return;
         const id=uid();
-        setShifts(p=>[...p,{
+        setShifts(p=>[{
           id, date: draft.date, start: draft.start, end: draft.end,
           tipsAccount: +draft.tipsAccount, cashTips: +draft.cashTips,
           bigBills: +draft.bigBills, products: +draft.products,
           notes: (draft.notes||'').trim()
-        }]);
-        setDraft({id:'',date:draft.date,start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+        }, ...p]);
+        resetDraft();
       }
+      
       function removeShift(id){ setShifts(p=>p.filter(s=>s.id!==id)); }
       function clearAll(){ if(confirm('Clear all saved shifts?')) setShifts([]); }
+
+      // --- EDIT/UPDATE LOGIC ---
+      function editShift(shift){
+          setEditId(shift.id);
+          setDraft({
+              id: shift.id,
+              date: shift.date,
+              start: shift.start,
+              end: shift.end,
+              // Convert numbers back to string for input fields
+              tipsAccount: String(shift.tipsAccount), 
+              cashTips: String(shift.cashTips),
+              bigBills: String(shift.bigBills),
+              products: String(shift.products),
+              notes: shift.notes
+          });
+          window.scrollTo(0, 0);
+      }
+      
+      async function updateShift(){
+        if(!validateDraft() || !editId) return;
+        
+        const updatedShiftData = {
+            id: editId,
+            date: draft.date, 
+            start: draft.start, 
+            end: draft.end,
+            tipsAccount: +draft.tipsAccount, 
+            cashTips: +draft.cashTips,
+            bigBills: +draft.bigBills, 
+            products: +draft.products,
+            notes: (draft.notes||'').trim(),
+            action: 'update'
+        };
+        
+        setShifts(p => p.map(s => s.id !== editId ? s : updatedShiftData));
+        await syncOneShift(updatedShiftData, 'Updated');
+        resetDraft();
+      }
+      
+      async function syncOneShift(shiftData, successMsgType){
+          try{ 
+              const data = await sheetsPOSTorPUT(shiftData, activeUrl, activeToken); 
+              if(data.ok && (data.updated || data.inserted)){
+                  alert(`${successMsgType} shift ${shiftData.id} to Google Sheets.`);
+              } else if(data.ok && data.skipped){
+                   // Skip notification for skipped saves
+              } else {
+                   alert('Sheets sync failed: ' + JSON.stringify(data));
+              }
+          }catch(e){ 
+              alert('Sheets sync error: ' + e.message); 
+          } 
+      }
+      
+      async function loadFromSheets(){ 
+          try{ 
+              const data=await sheetsGET(activeUrl, activeToken); 
+              if(data.ok){ 
+                  setShifts(data.items||[]); 
+                  alert('Loaded all shifts from Google Sheets.'); 
+              } else {
+                  alert('Sheets GET failed: ' + JSON.stringify(data)); 
+              }
+          }catch(e){ 
+              alert('Sheets GET error: '+e.message); 
+          } 
+      }
+      
+      async function saveNewToSheets(){ 
+          try{ 
+              const data=await sheetsGET(activeUrl, activeToken); 
+              const existing=new Set((data.items||[]).map(x=>x.id)); 
+              const toSend=shifts.filter(s=>!existing.has(s.id)); 
+              if (toSend.length === 0) {
+                  alert('No new shifts to save.');
+                  return;
+              }
+              for(const s of toSend){ 
+                  await syncOneShift(s, 'Saved new');
+              } 
+              alert(`Finished attempting to upload ${toSend.length} new shift(s) to Google Sheets.`); 
+          }catch(e){ 
+              alert('Sheets POST error: '+e.message); 
+          } 
+      }
+
       function downloadCSV(){ const csv=exportCSV(filteredShifts); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.csv'; a.click(); URL.revokeObjectURL(url); }
       function downloadJSON(){ const blob=new Blob([JSON.stringify(shifts,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.json'; a.click(); URL.revokeObjectURL(url); }
       function uploadJSON(e){ const f=e.target.files?.[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ try{ const data=JSON.parse(String(r.result)); if(!Array.isArray(data)) throw new Error('bad'); setShifts(data);}catch{ alert('Could not import this file'); } }; r.readAsText(f); }
 
-      async function loadFromSheets(){ try{ const data=await sheetsGET(); if(data.ok){ setShifts(data.items||[]); alert('Loaded from Google Sheets.'); } else alert('Sheets GET failed'); }catch(e){ alert('Sheets GET error: '+e.message); } }
-      async function saveNewToSheets(){ try{ const data=await sheetsGET(); const existing=new Set((data.items||[]).map(x=>x.id)); const toSend=shifts.filter(s=>!existing.has(s.id)); for(const s of toSend){ await sheetsPOST(s);} alert(`Uploaded ${toSend.length} new shift(s).`); }catch(e){ alert('Sheets POST error: '+e.message); } }
-
-      // Total hours for Hours-only report
       const totalHours = useMemo(()=>filteredShifts.reduce((sum,s)=> sum + hoursBetween(s.start,s.end), 0),[filteredShifts]);
 
-      return (
+	return (
         <div className="min-h-screen">
           <div className="max-w-6xl mx-auto p-4 sm:p-6 page bg-slate-50">
 
-            {/* ===== Add Shift ===== */}
+            {/* ===== Add/Edit Shift ===== */}
             <section className="bg-white rounded-2xl shadow p-4 mb-6">
-              <h2 className="font-semibold mb-4">Add Shift</h2>
+              <h2 className="font-semibold mb-4">{editId ? 'Edit Shift' : 'Add Shift'}</h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">Date <span className="text-red-500">*</span></label>
                   <input required type="date" value={draft.date} onChange={e=>setDraft({...draft, date:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">Start <span className="text-red-500">*</span></label>
                   <input required type="time" value={draft.start} onChange={e=>setDraft({...draft, start:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">End <span className="text-red-500">*</span></label>
                   <input required type="time" value={draft.end} onChange={e=>setDraft({...draft, end:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">Acc Tips (Gross) <span className="text-red-500">*</span></label>
                   <input required type="number" step="0.01" value={draft.tipsAccount} onChange={e=>setDraft({...draft, tipsAccount:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">Cash Tips <span className="text-red-500">*</span></label>
                   <input required type="number" step="0.01" value={draft.cashTips} onChange={e=>setDraft({...draft, cashTips:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text-sm mb-1">Big Bills Total <span className="text-red-500">*</span></label>
                   <input required type="number" step="0.01" value={draft.bigBills} onChange={e=>setDraft({...draft, bigBills:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div>
+                <div className="col-span-1">
                   <label className="block text sm mb-1">Products Sold <span className="text-red-500">*</span></label>
                   <input required type="number" step="1" value={draft.products} onChange={e=>setDraft({...draft, products:e.target.value})} className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div className="md:col-span-2">
+                <div className="md:col-span-2 col-span-2">
                   <label className="block text-sm mb-1">Additional Notes </label>
                   <input type="text" value={draft.notes} onChange={e=>setDraft({...draft, notes:e.target.value})} placeholder="e.g., Brow laminations, regulars, promos, etc." className="w-full border rounded-xl px-3 py-2" />
                 </div>
-                <div className="flex items-end md:col-span-1">
-                  <button onClick={addShift} className="w-full px-3 py-2 rounded-2xl shadow bg-slate-900 text-white hover:bg-slate-800">Add</button>
+                
+                {/* Add/Update Button Block */}
+                <div className="flex items-end col-span-2 md:col-span-1">
+                  {editId ? (
+                    <div className='flex gap-2 w-full'>
+                      <button onClick={updateShift} className="w-1/2 px-3 py-2 rounded-2xl shadow bg-orange-600 text-white hover:bg-orange-500">Update</button>
+                      <button onClick={resetDraft} className="w-1/2 px-3 py-2 rounded-2xl shadow bg-slate-400 text-white hover:bg-slate-300">Cancel</button>
+                    </div>
+                  ) : (
+                    <button onClick={addShift} className="w-full px-3 py-2 rounded-2xl shadow bg-slate-900 text-white hover:bg-slate-800">Add</button>
+                  )}
                 </div>
               </div>
             </section>
 
-            {/* ===== Report Filters ===== */}
+            {/* ===== Report Filters (Unchanged) ===== */}
             <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
               <h2 className="font-semibold mb-4">Report Filters</h2>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
-                <div><label className="block text-sm mb-1">From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
-                <div><label className="block text-sm mb-1">To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
-                <div className="flex gap-2 md:col-span-4">
-                  <button onClick={()=>{setFrom(firstOfMonthISO()); setTo(lastOfMonthISO());}} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800">This Month</button>
-                  <button onClick={()=>{const now=new Date(); const prev=new Date(now.getFullYear(), now.getMonth()-1, 1); setFrom(firstOfMonthISO(prev)); setTo(lastOfMonthISO(prev));}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">Last Month</button>
-                  <button onClick={()=>{const now=new Date(); setFrom(`${now.getFullYear()}-01-01`); setTo(todayISO());}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">YTD</button>
-                  <button onClick={()=>{setFrom(""); setTo("");}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">All Time</button>
+                <div className="col-span-1"><label className="block text-sm mb-1">From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
+                <div className="col-span-1"><label className="block text-sm mb-1">To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
+                <div className="flex flex-wrap gap-2 col-span-2 md:col-span-4"> 
+                  <button onClick={()=>{setFrom(firstOfMonthISO()); setTo(lastOfMonthISO());}} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800 flex-grow">This Month</button>
+                  <button onClick={()=>{const now=new Date(); const prev=new Date(now.getFullYear(), now.getMonth()-1, 1); setFrom(firstOfMonthISO(prev)); setTo(lastOfMonthISO(prev));}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">Last Month</button>
+                  <button onClick={()=>{const now=new Date(); setFrom(`${now.getFullYear()}-01-01`); setTo(todayISO());}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">YTD</button>
+                  <button onClick={()=>{setFrom(""); setTo("");}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">All Time</button>
                 </div>
               </div>
               <p className="text-xs text-slate-500 mt-2">{filteredShifts.length} shift(s) in range.</p>
@@ -256,44 +510,85 @@
                 <h2 className="font-semibold mb-4">Totals (Filtered)</h2>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="text-slate-600">Total Hours</div><div className="font-medium">{totals.hours.toFixed(2)}</div>
-                  <div className="text-slate-600">Hourly Pay</div><div className="font-medium">{currency(totals.hourlyPay)}</div>
-                  <div className="text-slate-600">Net Account Tips</div><div className="font-medium">{currency(totals.netAcc)}</div>
-                  <div className="text-slate-600">Cash Tips</div><div className="font-medium">{currency(totals.cash)}</div>
-                  <div className="text-slate-600">Net Big Bills</div><div className="font-medium">{currency(totals.netBig)}</div>
-                  <div className="text-slate-600">Product Commission</div><div className="font-medium">{currency(totals.prod)}</div>
-                  <div className="text-slate-600">Total Pay</div><div className="font-bold">{currency(totals.total)}</div>
+                  <div className="text-slate-600">Hourly Pay</div><div className="font-medium">{totals.hourlyPay.toFixed(2)}</div>
+                  <div className="text-slate-600">Net Account Tips</div><div className="font-medium">{totals.netAcc.toFixed(2)}</div>
+                  <div className="text-slate-600">Cash Tips</div><div className="font-medium">{totals.cash.toFixed(2)}</div>
+                  <div className="text-slate-600">Net Big Bills</div><div className="font-medium">{totals.netBig.toFixed(2)}</div>
+                  <div className="text-slate-600">Product Commission</div><div className="font-medium">{totals.prod.toFixed(2)}</div>
+                  <div className="text-slate-600">Total Pay</div><div className="font-bold">{totals.total.toFixed(2)}</div>
                 </div>
               </div>
-              <div className="bg-white rounded-2xl shadow p-4">
+              <div className="bg-white rounded-2xl shadow p-4 overflow-x-auto">
                 <h2 className="font-semibold mb-4">Monthly Breakdown (Filtered)</h2>
-                <table className="w-full text-sm">
-                  <thead><tr className="text-left border-b"><th className="py-2 pr-3">Month</th><th className="py-2 pr-3">Hours</th><th className="py-2 pr-3">Pay</th><th className="py-2 pr-3">Acc Tips</th><th className="py-2 pr-3">Cash</th><th className="py-2 pr-3">Big Bills</th><th className="py-2 pr-3">Prod</th><th className="py-2 pr-3">Total</th></tr></thead>
+                <table className="min-w-full text-sm">
+                  <thead>
+                      <tr className="text-left border-b">
+                          {/* Monthly Headers with Sorting */}
+                          {[
+                              {key: 0, label: 'Month'},
+                              {key: 1, label: 'Hours'},
+                              {key: 2, label: 'Pay'},
+                              {key: 3, label: 'Acc Tips'},
+                              {key: 4, label: 'Cash'},
+                              {key: 5, label: 'Big Bills'},
+                              {key: 6, label: 'Prod'},
+                              {key: 7, label: 'Total'},
+                          ].map(h => (
+                              <th 
+                                key={h.key} 
+                                className={`py-2 pr-3 sort-header ${getMonthlySortClass(h.key)}`} 
+                                onClick={() => requestMonthlySort(h.key)}
+                              >
+                                {h.label} <span className="sort-indicator"></span>
+                              </th>
+                          ))}
+                      </tr>
+                  </thead>
                   <tbody>
-                    {monthly.map(([m,v])=> (
+                    {sortedMonthly.map(([m,v])=> (
                       <tr key={m} className="border-b last:border-0">
                         <td className="py-2 pr-3">{m}</td>
                         <td className="py-2 pr-3">{v.hours.toFixed(2)}</td>
-                        <td className="py-2 pr-3">{currency(v.pay)}</td>
-                        <td className="py-2 pr-3">{currency(v.acc)}</td>
-                        <td className="py-2 pr-3">{currency(v.cash)}</td>
-                        <td className="py-2 pr-3">{currency(v.big)}</td>
-                        <td className="py-2 pr-3">{currency(v.prod)}</td>
-                        <td className="py-2 pr-3 font-medium">{currency(v.total)}</td>
+                        <td className="py-2 pr-3">{v.pay.toFixed(2)}</td>
+                        <td className="py-2 pr-3">{v.acc.toFixed(2)}</td>
+                        <td className="py-2 pr-3">{v.cash.toFixed(2)}</td>
+                        <td className="py-2 pr-3">{v.big.toFixed(2)}</td>
+                        <td className="py-2 pr-3">{v.prod.toFixed(2)}</td>
+                        <td className="py-2 pr-3 font-medium">{v.total.toFixed(2)}</td>
                       </tr>
                     ))}
-                    {monthly.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="8">No data in this range.</td></tr>)}
+                    {sortedMonthly.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="8">No data in this range.</td></tr>)}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            {/* ===== Hours-only Report ===== */}
-            <section className="bg-white rounded-2xl shadow p-4 mb-6">
+            {/* ===== Hours-only Report (Filtered) ===== */}
+            <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-x-auto">
               <h2 className="font-semibold mb-4">Hours Report (Filtered)</h2>
-              <table className="w-full text-sm">
-                <thead><tr className="text-left border-b"><th className="py-2 pr-3">Day</th><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Start</th><th className="py-2 pr-3">End</th><th className="py-2 pr-3">Hours</th></tr></thead>
+              <table className="min-w-full text-sm">
+                <thead>
+                    <tr className="text-left border-b">
+                        {/* Hours Headers with Sorting */}
+                        {[
+                            {key: 'date', label: 'Day'},
+                            {key: 'date', label: 'Date'},
+                            {key: 'start', label: 'Start'},
+                            {key: 'end', label: 'End'},
+                            {key: 'hours', label: 'Hours'},
+                        ].map((h, index) => (
+                            <th 
+                                key={index} 
+                                className={`py-2 pr-3 sort-header ${getShiftSortClass(h.key)}`} 
+                                onClick={() => requestShiftSort(h.key)}
+                            >
+                                {h.label} <span className="sort-indicator"></span>
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
                 <tbody>
-                  {filteredShifts.map(s=>{ const hrs=hoursBetween(s.start,s.end); return (
+                  {sortedShifts.map(s=>{ const hrs=hoursBetween(s.start,s.end); return (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
                       <td className="py-2 pr-3">{s.date}</td>
@@ -302,7 +597,7 @@
                       <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
                     </tr>
                   );})}
-                  {filteredShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="5">No shifts in this range.</td></tr>)}
+                  {sortedShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="5">No shifts in this range.</td></tr>)}
                 </tbody>
                 <tfoot>
                   <tr className="border-t font-medium"><td className="py-2 pr-3" colSpan="4">Total Hours</td><td className="py-2 pr-3">{totals.hours.toFixed(2)}</td></tr>
@@ -310,7 +605,7 @@
               </table>
             </section>
 
-            {/* ===== Charts ===== */}
+            {/* ===== Charts (Unchanged) ===== */}
             <section className="grid md:grid-cols-2 gap-6 mb-6">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-4">Chart: Total Pay by Day</h2>
@@ -323,103 +618,131 @@
             </section>
 
             {/* ===== Shifts split: Inputs & Earnings ===== */}
-            <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-auto">
+            <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-x-auto">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-semibold">Shifts — Inputs (Filtered)</h2>
-                {getUrl() ? (
+                {activeUrl ? (
                   <div className="no-print flex gap-2">
-                    <button onClick={loadFromSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100">Load from Sheets</button>
-                    <button onClick={saveNewToSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100">Save NEW to Sheets</button>
+                    <button onClick={loadFromSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100 flex-shrink-0">Load from Sheets</button>
+                    <button onClick={saveNewToSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100 flex-shrink-0">Save NEW to Sheets</button>
                   </div>
                 ) : (
-                  <div className="text-xs text-slate-500 no-print">(Paste your Sheets URL above to enable syncing)</div>
+                  <div className="text-xs text-slate-500 no-print flex-shrink-0">(Paste your Sheets URL above to enable syncing)</div>
                 )}
               </div>
-              <table className="min-w-full text-sm mb-8">
-                <thead><tr className="text-left border-b">
-                  <th className="py-2 pr-3">Day</th>
-                  <th className="py-2 pr-3">Date</th>
-                  <th className="py-2 pr-3">Start</th>
-                  <th className="py-2 pr-3">End</th>
-                  <th className="py-2 pr-3">Acct Tips (Gross)</th>
-                  <th className="py-2 pr-3">Cash Tips</th>
-                  <th className="py-2 pr-3">Big Bills</th>
-                  <th className="py-2 pr-3">Products</th>
-                  <th className="py-2 pr-3">Notes</th>
-                  <th></th>
-                </tr></thead>
+              <table className="min-w-max text-sm mb-8">
+                <thead>
+                    <tr className="text-left border-b">
+                        {/* Input Headers with Sorting */}
+                        {[
+                            {key: 'date', label: 'Day'},
+                            {key: 'date', label: 'Date'},
+                            {key: 'start', label: 'Start'},
+                            {key: 'end', label: 'End'},
+                            {key: 'tipsAccount', label: 'Acct Tips'},
+                            {key: 'cashTips', label: 'Cash Tips'},
+                            {key: 'bigBills', label: 'Big Bills'},
+                            {key: 'products', label: 'Products'},
+                            {key: 'notes', label: 'Notes'},
+                        ].map((h, index) => (
+                            <th 
+                                key={index} 
+                                className={`py-2 pr-3 sort-header ${getShiftSortClass(h.key)}`} 
+                                onClick={() => requestShiftSort(h.key)}
+                            >
+                                {h.label} <span className="sort-indicator"></span>
+                            </th>
+                        ))}
+                        <th className="py-2 pl-3"></th>
+                    </tr>
+                </thead>
                 <tbody>
-                  {filteredShifts.map((s)=> (
+                  {sortedShifts.map((s)=> (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
                       <td className="py-2 pr-3">{s.date}</td>
                       <td className="py-2 pr-3">{s.start}</td>
                       <td className="py-2 pr-3">{s.end}</td>
-                      <td className="py-2 pr-3">{currency(s.tipsAccount)}</td>
-                      <td className="py-2 pr-3">{currency(s.cashTips)}</td>
-                      <td className="py-2 pr-3">{currency(s.bigBills)}</td>
+                      <td className="py-2 pr-3">{s.tipsAccount}</td>
+                      <td className="py-2 pr-3">{s.cashTips}</td>
+                      <td className="py-2 pr-3">{s.bigBills}</td>
                       <td className="py-2 pr-3">{s.products}</td>
                       <td className="py-2 pr-3">{s.notes||''}</td>
-                      <td className="py-2 pr-3 text-right no-print"><button onClick={()=>removeShift(s.id)} className="text-red-600 hover:underline">Delete</button></td>
+                      <td className="py-2 pl-3 text-right no-print flex gap-2">
+                          <button onClick={()=>editShift(s)} className="text-blue-600 hover:underline">Edit</button>
+                          <button onClick={()=>removeShift(s.id)} className="text-red-600 hover:underline">Delete</button>
+                      </td>
                     </tr>
                   ))}
-                  {filteredShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="10">No shifts in this range.</td></tr>)}
+                  {sortedShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="10">No shifts in this range.</td></tr>)}
                 </tbody>
               </table>
 
               <h2 className="font-semibold mb-3">Shifts — Earnings (Filtered)</h2>
-              <table className="min-w-full text-sm">
-                <thead><tr className="text-left border-b">
-                  <th className="py-2 pr-3">Day</th>
-                  <th className="py-2 pr-3">Date</th>
-                  <th className="py-2 pr-3">Start</th>
-                  <th className="py-2 pr-3">End</th>
-                  <th className="py-2 pr-3">Hours</th>
-                  <th className="py-2 pr-3">Hourly Pay</th>
-                  <th className="py-2 pr-3">Net Acct Tips</th>
-                  <th className="py-2 pr-3">Net Big Bills</th>
-                  <th className="py-2 pr-3">Prod Comm</th>
-                  <th className="py-2 pr-3">Shift Total</th>
-                </tr></thead>
+              <table className="min-w-max text-sm">
+                <thead>
+                    <tr className="text-left border-b">
+                        {/* Earnings Headers with Sorting */}
+                        {[
+                            {key: 'date', label: 'Day'},
+                            {key: 'date', label: 'Date'},
+                            {key: 'start', label: 'Start'},
+                            {key: 'end', label: 'End'},
+                            {key: 'hours', label: 'Hours'},
+                            {key: 'hourlyPay', label: 'Hourly Pay'},
+                            {key: 'netAcc', label: 'Net Acct Tips'},
+                            {key: 'netBig', label: 'Net Big Bills'},
+                            {key: 'prod', label: 'Prod Comm'},
+                            {key: 'total', label: 'Shift Total'},
+                        ].map((h, index) => (
+                            <th 
+                                key={index} 
+                                className={`py-2 pr-3 sort-header ${getShiftSortClass(h.key)}`} 
+                                onClick={() => requestShiftSort(h.key)}
+                            >
+                                {h.label} <span className="sort-indicator"></span>
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
                 <tbody>
-                  {filteredShifts.map((s)=>{const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return (
+                  {sortedShifts.map((s)=>{const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
                       <td className="py-2 pr-3">{s.date}</td>
                       <td className="py-2 pr-3">{s.start}</td>
                       <td className="py-2 pr-3">{s.end}</td>
                       <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
-                      <td className="py-2 pr-3">{currency(hourly)}</td>
-                      <td className="py-2 pr-3">{currency(netAcc)}</td>
-                      <td className="py-2 pr-3">{currency(netBig)}</td>
-                      <td className="py-2 pr-3">{currency(prod)}</td>
-                      <td className="py-2 pr-3 font-medium">{currency(total)}</td>
+                      <td className="py-2 pr-3">{hourly.toFixed(2)}</td>
+                      <td className="py-2 pr-3">{netAcc.toFixed(2)}</td>
+                      <td className="py-2 pr-3">{netBig.toFixed(2)}</td>
+                      <td className="py-2 pr-3">{prod.toFixed(2)}</td>
+                      <td className="py-2 pr-3 font-medium">{total.toFixed(2)}</td>
                     </tr>
                   );})}
-                  {filteredShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="10">No shifts in this range.</td></tr>)}
+                  {sortedShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="10">No shifts in this range.</td></tr>)}
                 </tbody>
               </table>
             </section>
 
-            {/* ===== Google Sheets Settings ===== */}
+            {/* ===== Google Sheets Settings (Unchanged) ===== */}
             <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
               <h2 className="font-semibold mb-1">Google Sheets Sync (optional)</h2>
-              <p className="text-xs text-slate-600 mb-3">Paste your Apps Script Web App URL and token. Saved to this browser. (Headers in your Sheet must be: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>.)</p>
+              <p className="text-xs text-slate-600 mb-3">Paste your Apps Script Web App URL and token. Saved to this browser. (Headers in your Sheet must be exactly: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>.)</p>
               <div className="grid md:grid-cols-3 gap-3">
-                <input type="url" placeholder="Web App URL (…/exec)" value={apiUrl} onChange={e=>setApiUrl(e.target.value)} className="border rounded-xl px-3 py-2" />
-                <input type="text" placeholder="X-Token (if set in script)" value={apiToken} onChange={e=>setApiToken(e.target.value)} className="border rounded-xl px-3 py-2" />
+                <input type="url" placeholder="Web App URL (…/exec)" value={apiUrl} onChange={e=>setApiUrl(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
+                <input type="text" placeholder="X-Token (if set in script)" value={apiToken} onChange={e=>setApiToken(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
                 <div className="flex gap-2">
-                  <button onClick={saveSheetsSettings} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800">Save</button>
-                  <button onClick={clearSheetsSettings} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">Clear</button>
+                  <button onClick={saveSheetsSettings} className="w-full px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800">Save</button>
+                  <button onClick={clearSheetsSettings} className="w-full px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100">Clear</button>
                 </div>
               </div>
             </section>
 
-
-            <footer className="no-print text-xs text-slate-500">
-              <p>Rates: $8/hr, 85% of account tips, 10% of big bills, $1/product. Change in code if needed.</p>
-              <p className="mt-1">Google Sheets headers must be exactly: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>.</p>
-            </footer>
+			<footer className="no-print text-xs text-slate-500">
+				<p>Rates: $8/hr, 85% of account tips, 10% of big bills, $1/product. Change in code if needed.</p>
+				<p>made for LOVE, with LOVE ❤️</p>
+			</footer>
           </div>
         </div>
       );
