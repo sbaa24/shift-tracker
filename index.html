@@ -267,8 +267,9 @@
         const netBig=s.bigBills*0.10;
         const prod=s.products*1;
         const total=hourly+netAcc+netBig+s.cashTips+prod;
-        return {hours:a.hours+hrs,hourlyPay:a.hourlyPay+hourly,netAcc:a.netAcc+netAcc,cash:a.cash+s.cashTips,netBig:a.netBig+netBig,prod:a.prod+prod,total:a.total+total};
-      },{hours:0,hourlyPay:0,netAcc:0,cash:0,netBig:0,prod:0,total:0}),[filteredShifts]);
+		const netTotalToBePaid = total - s.cashTips;
+        return {hours:a.hours+hrs,hourlyPay:a.hourlyPay+hourly,netAcc:a.netAcc+netAcc,cash:a.cash+s.cashTips,netBig:a.netBig+netBig,prod:a.prod+prod,total:a.total+total,netTotalToBePaid: a.netTotalToBePaid + netTotalToBePaid};
+      },{hours:0,hourlyPay:0,netAcc:0,cash:0,netBig:0,prod:0,total:0,netTotalToBePaid:0}),[filteredShifts]);
 
       const monthly=useMemo(()=>{
         const m={};
@@ -515,7 +516,8 @@
                   <div className="text-slate-600">Cash Tips</div><div className="font-medium">{totals.cash.toFixed(2)}</div>
                   <div className="text-slate-600">Net Big Bills</div><div className="font-medium">{totals.netBig.toFixed(2)}</div>
                   <div className="text-slate-600">Product Commission</div><div className="font-medium">{totals.prod.toFixed(2)}</div>
-                  <div className="text-slate-600">Total Pay</div><div className="font-bold">{totals.total.toFixed(2)}</div>
+                  <div className="text-slate-600 pt-2 border-t font-semibold">Total Pay</div><div className="font-bold pt-2 border-t">{totals.total.toFixed(2)}</div>
+				  <div className="text-slate-600 pt-2 border-t font-semibold">Net Total to be Paid</div><div className="font-bold pt-2 border-t">{totals.netTotalToBePaid.toFixed(2)}</div>
                 </div>
               </div>
               <div className="bg-white rounded-2xl shadow p-4 overflow-x-auto">
