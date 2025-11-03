@@ -53,8 +53,8 @@
       return [headers,...rows].map(r=>r.map(esc).join(",")).join("\n");
     }
     function todayISO(){ return new Date().toISOString().slice(0,10); }
-    function firstOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),1); return x.toISOString().slice(0,10); }
-    function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
+    function firstOfMonthISO(d=new Date()){ const year = d.getFullYear(); const month = d.getMonth() + 1; return `${year}-${String(month).padStart(2,"0")}-01`; }
+    function lastOfMonthISO(d=new Date()){ const x = new Date(d.getFullYear(), d.getMonth() + 1, 0); const year = x.getFullYear(); const month = String(x.getMonth() + 1).padStart(2, "0"); const day = String(x.getDate()).padStart(2, "0"); return `${year}-${month}-${day}`; }
 	// NEW HELPER: Formats date from YYYY-MM-DD to DD-MM-YY
 	function formatDateDisplay(dateISO){if(!dateISO) return ''; const parts = dateISO.split('-'); if (parts.length !== 3) return dateISO; const [year, month, day] = parts; return `${day}-${month}-${year.slice(2)}`; }
 
