@@ -56,9 +56,9 @@
     function firstOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),1); return x.toISOString().slice(0,10); }
     function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
 
-    // ====== Sorting Logic ======
+    // ====== Sorting Logic (Corrected) ======
 
-    // Custom hook for sortable shifts tables
+// Custom hook for sortable shifts tables
     function useSortableShifts(items, initialSortKey = 'date', initialDirection = 'descending') {
       const [sortConfig, setSortConfig] = useState({ key: initialSortKey, direction: initialDirection });
 
@@ -70,7 +70,7 @@
             let bValue = b[sortConfig.key];
 
             // --- Calculation/Special Fields ---
-            if (['hours', 'hourlyPay', 'netAcc', 'netBig', 'prod', 'total'].includes(sortConfig.key)) {
+            if (['hours', 'hourlyPay', 'netAcc', 'netBig', 'prod', 'total', 'netTotalToBePaid'].includes(sortConfig.key)) {
                 const calculateValue = (s) => {
                     const hrs = hoursBetween(s.start, s.end);
                     const hourly = hrs * HOURLY_RATE;
@@ -78,6 +78,7 @@
                     const netBig = s.bigBills * 0.10;
                     const prod = s.products * 1;
                     const total = hourly + netAcc + netBig + s.cashTips + prod;
+                    const netTotalToBePaid = total - s.cashTips;
                     
                     switch (sortConfig.key) {
                         case 'hours': return hrs;
@@ -86,6 +87,7 @@
                         case 'netBig': return netBig;
                         case 'prod': return prod;
                         case 'total': return total;
+                        case 'netTotalToBePaid': return netTotalToBePaid;
                         default: return 0;
                     }
                 };
@@ -96,11 +98,15 @@
                 aValue = new Date(a.date + 'T00:00:00');
                 bValue = new Date(b.date + 'T00:00:00');
             } else if (sortConfig.key === 'start' || sortConfig.key === 'end') {
-                // Time sorting
+                // Time sorting: converts time string to minutes
                 aValue = parseTimeToMinutes(aValue);
                 bValue = parseTimeToMinutes(bValue);
+            } else if (['tipsAccount', 'cashTips', 'bigBills', 'products'].includes(sortConfig.key)) {
+                // Numeric fields: ensure they are treated as numbers, even if stored as strings
+                aValue = Number(aValue);
+                bValue = Number(bValue);
             } else if (typeof aValue === 'string') {
-                // Lexicographical sort for strings
+                // Lexicographical sort for general strings
                 aValue = aValue.toLowerCase();
                 bValue = bValue.toLowerCase();
             }
@@ -119,15 +125,14 @@
         return sortableItems;
       }, [items, sortConfig]);
 
+      // FIX: Implement the two-state cycle logic
       const requestSort = (key) => {
         let direction = 'ascending';
-        if (sortConfig.key === key && sortConfig.direction === 'ascending') {
-          direction = 'descending';
-        } else if (sortConfig.key === key && sortConfig.direction === 'descending') {
-          // Reset to default sort after descending
-          key = initialSortKey;
-          direction = initialDirection;
+        if (sortConfig.key === key) {
+          // If the same key is clicked, just reverse the direction
+          direction = sortConfig.direction === 'ascending' ? 'descending' : 'ascending';
         }
+        // If a different key is clicked, start ascending
         setSortConfig({ key, direction });
       };
 
@@ -138,10 +143,10 @@
 
       return { sortedItems, requestSort, getSortClass, sortConfig };
     }
-    
-    // Custom hook for Monthly Breakdown sorting (handles [key, value] array format)
+	
+    // Custom hook for Monthly Breakdown sorting (Unchanged, stable)
     function useSortableMonthly(items) {
-      const [sortConfig, setSortConfig] = useState({ key: 0, direction: 'ascending' }); // Key 0 is 'Month'
+      const [sortConfig, setSortConfig] = useState({ key: 0, direction: 'ascending' }); 
 
       const sortedItems = useMemo(() => {
         let sortableItems = [...items];
@@ -149,11 +154,9 @@
           sortableItems.sort((a, b) => {
             let comparison = 0;
             
-            // For Month (index 0), sort chronologically by key (YYYY-MM)
             if (sortConfig.key === 0) {
               comparison = a[0].localeCompare(b[0]);
             } else {
-                // For calculated values (index 1, object keys)
                 const field = ['hours', 'pay', 'acc', 'cash', 'big', 'prod', 'total'][sortConfig.key - 1];
                 let aValue = a[1][field];
                 let bValue = b[1][field];
@@ -196,7 +199,7 @@
       if(!url) throw new Error("No Sheets URL set. Paste it in the Google Sheets Sync section.");
       const reqUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
       const res = await fetch(reqUrl);
-      return await res.json(); // { ok, items: [{id,...}] }
+      return await res.json(); 
     }
     
     async function sheetsPOSTorPUT(item, url, token){
@@ -222,26 +225,42 @@
     }
 
     function App(){
+      // State Initialization: Load shifts from localStorage
       const [shifts,setShifts]=useState(()=>{ try{return JSON.parse(localStorage.getItem('eyebrow_shifts'))||[]}catch{return[]} });
       useEffect(()=>{ localStorage.setItem('eyebrow_shifts',JSON.stringify(shifts)); },[shifts]);
 
-      // State for current draft (for adding) AND for an item currently being edited
       const [editId, setEditId] = useState(null); 
-      // Fixed: Ensure tipsAccount is initialized as an empty string to match input type="number" behavior
-      const [draft,setDraft]=useState({id:'',date:'',start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+      // Instruction 1: Default Big Bills and Products Sold to '0'
+      const [draft,setDraft]=useState({
+        id:'', date:'', start:'', end:'', tipsAccount:'', cashTips:'', 
+        bigBills:'0', products:'0', notes:''
+      });
 
-      // Sheets settings (UI -> localStorage).
+      // Sheets settings
       const [apiUrl,setApiUrl]=useState(() => getUrl());
       const [apiToken,setApiToken]=useState(() => getToken());
       
       const activeUrl = useMemo(() => getUrl(apiUrl), [apiUrl]);
       const activeToken = useMemo(() => getToken(apiToken), [apiToken]);
 
-      function saveSheetsSettings(){ 
-        localStorage.setItem('sheets_url',apiUrl.trim()); 
-        localStorage.setItem('sheets_token',apiToken.trim()); 
-        alert('Settings saved. Sync buttons are now active.'); 
+      // FIX: Loads sheets immediately after saving settings
+      async function saveSheetsSettings(){ 
+        const newUrl = apiUrl.trim();
+        const newToken = apiToken.trim();
+        
+        localStorage.setItem('sheets_url', newUrl); 
+        localStorage.setItem('sheets_token', newToken); 
+        
+        // Update the component state immediately
+        setApiUrl(newUrl);
+        setApiToken(newToken);
+        
+        alert('Settings saved. Auto-loading shifts from Sheets...'); 
+        
+        // Trigger immediate load from Sheets using the newly saved URL/Token
+        await loadFromSheets(newUrl, newToken); 
       }
+      
       function clearSheetsSettings(){ 
         localStorage.removeItem('sheets_url'); 
         localStorage.removeItem('sheets_token'); 
@@ -250,14 +269,27 @@
         alert('Settings cleared.');
       }
 
-      // Reporting filters
-      const [from,setFrom]=useState(firstOfMonthISO());
-      const [to,setTo]=useState(lastOfMonthISO());
+      // Instruction 2: Filter state persistence initialization
+      const defaultFrom = firstOfMonthISO();
+      const defaultTo = lastOfMonthISO();
+      
+      const [from, setFrom] = useState(() => localStorage.getItem('filter_from') || defaultFrom);
+      const [to, setTo] = useState(() => localStorage.getItem('filter_to') || defaultTo);
+
+      // Save filters to localStorage whenever they change
+      useEffect(() => {
+        localStorage.setItem('filter_from', from);
+      }, [from]);
+
+      useEffect(() => {
+        localStorage.setItem('filter_to', to);
+      }, [to]);
+
+
       function withinRange(d){ if(!d) return false; if(from&&d<from) return false; if(to&&d>to) return false; return true; }
       const filteredShifts=useMemo(()=>shifts.filter(s=>withinRange(s.date)),[shifts,from,to]);
 
       // --- Sorting Logic Hooks ---
-      // Note: Sorted shifts are calculated from filteredShifts
       const { sortedItems: sortedShifts, requestSort: requestShiftSort, getSortClass: getShiftSortClass } = useSortableShifts(filteredShifts);
       
       const totals=useMemo(()=>filteredShifts.reduce((a,s)=>{
@@ -267,9 +299,20 @@
         const netBig=s.bigBills*0.10;
         const prod=s.products*1;
         const total=hourly+netAcc+netBig+s.cashTips+prod;
-		const netTotalToBePaid = total - s.cashTips;
-        return {hours:a.hours+hrs,hourlyPay:a.hourlyPay+hourly,netAcc:a.netAcc+netAcc,cash:a.cash+s.cashTips,netBig:a.netBig+netBig,prod:a.prod+prod,total:a.total+total,netTotalToBePaid: a.netTotalToBePaid + netTotalToBePaid};
-      },{hours:0,hourlyPay:0,netAcc:0,cash:0,netBig:0,prod:0,total:0,netTotalToBePaid:0}),[filteredShifts]);
+		    // New Calculation: Net Total to be Paid = Total Pay - Cash Tips (which the employee already has)
+		    const netTotalToBePaid = total - s.cashTips;
+        return {
+          hours:a.hours+hrs,
+          hourlyPay:a.hourlyPay+hourly,
+          netAcc:a.netAcc+netAcc,
+          cash:a.cash+s.cashTips,
+          netBig:a.netBig+netBig,
+          prod:a.prod+prod,
+          total:a.total+total,
+          netTotalToBePaid: a.netTotalToBePaid + netTotalToBePaid
+        };
+      }, {hours:0, hourlyPay:0, netAcc:0, cash:0, netBig:0, prod:0, total:0, netTotalToBePaid:0}),[filteredShifts]);
+
 
       const monthly=useMemo(()=>{
         const m={};
@@ -323,19 +366,31 @@
       }
       
       function resetDraft(){
-        setDraft({id:'',date:draft.date,start:'',end:'',tipsAccount:'',cashTips:'',bigBills:'',products:'',notes:''});
+        setDraft({
+          id:'', date:draft.date, start:'', end:'', tipsAccount:'', cashTips:'', 
+          bigBills:'0', products:'0', notes:''
+        });
         setEditId(null);
       }
       
-      function addShift(){
+      async function addShift(){
         if(!validateDraft()) return;
         const id=uid();
-        setShifts(p=>[{
+
+        const newShiftData = {
           id, date: draft.date, start: draft.start, end: draft.end,
           tipsAccount: +draft.tipsAccount, cashTips: +draft.cashTips,
           bigBills: +draft.bigBills, products: +draft.products,
           notes: (draft.notes||'').trim()
-        }, ...p]);
+        };
+
+        // 1. Update local state
+        setShifts(p=>[newShiftData, ...p]);
+        
+        // Auto-sync new shift to Sheets immediately
+        await syncOneShift(newShiftData, 'Saved'); 
+
+        // 2. Reset the form
         resetDraft();
       }
       
@@ -376,8 +431,13 @@
             action: 'update'
         };
         
+        // 1. Update local state
         setShifts(p => p.map(s => s.id !== editId ? s : updatedShiftData));
+        
+        // 2. Auto-sync updated shift to Sheets immediately
         await syncOneShift(updatedShiftData, 'Updated');
+        
+        // 3. Reset the form
         resetDraft();
       }
       
@@ -385,9 +445,8 @@
           try{ 
               const data = await sheetsPOSTorPUT(shiftData, activeUrl, activeToken); 
               if(data.ok && (data.updated || data.inserted)){
-                  alert(`${successMsgType} shift ${shiftData.id} to Google Sheets.`);
+                  console.log(`${successMsgType} shift ${shiftData.id} synced to Google Sheets.`);
               } else if(data.ok && data.skipped){
-                   // Skip notification for skipped saves
               } else {
                    alert('Sheets sync failed: ' + JSON.stringify(data));
               }
@@ -396,17 +455,20 @@
           } 
       }
       
-      async function loadFromSheets(){ 
+      // Load shifts function updated to accept explicit URL/Token for immediate use
+      async function loadFromSheets(url = activeUrl, token = activeToken){ 
+          if (!url) return; 
+          
           try{ 
-              const data=await sheetsGET(activeUrl, activeToken); 
+              const data=await sheetsGET(url, token); 
               if(data.ok){ 
                   setShifts(data.items||[]); 
-                  alert('Loaded all shifts from Google Sheets.'); 
+                  console.log(`Loaded ${data.items.length} shifts from Google Sheets.`);
               } else {
-                  alert('Sheets GET failed: ' + JSON.stringify(data)); 
+                  console.error('Sheets GET failed: ', data); 
               }
           }catch(e){ 
-              alert('Sheets GET error: '+e.message); 
+              console.error('Sheets GET error: ', e); 
           } 
       }
       
@@ -427,6 +489,12 @@
               alert('Sheets POST error: '+e.message); 
           } 
       }
+
+      // Instruction 3: Auto-load shifts on component mount (uses activeUrl/activeToken from memo)
+      useEffect(() => {
+        loadFromSheets();
+      }, [activeUrl, activeToken]);
+
 
       function downloadCSV(){ const csv=exportCSV(filteredShifts); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.csv'; a.click(); URL.revokeObjectURL(url); }
       function downloadJSON(){ const blob=new Blob([JSON.stringify(shifts,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='eyebrow_shifts.json'; a.click(); URL.revokeObjectURL(url); }
@@ -489,7 +557,7 @@
               </div>
             </section>
 
-            {/* ===== Report Filters (Unchanged) ===== */}
+            {/* ===== Report Filters (Filter Persistence Added) ===== */}
             <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
               <h2 className="font-semibold mb-4">Report Filters</h2>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
@@ -505,7 +573,7 @@
               <p className="text-xs text-slate-500 mt-2">{filteredShifts.length} shift(s) in range.</p>
             </section>
 
-            {/* ===== Totals & Monthly under Filters ===== */}
+            {/* ===== Totals & Monthly under Filters (Net Total Added) ===== */}
             <section className="grid md:grid-cols-2 gap-6 mb-6">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-4">Totals (Filtered)</h2>
@@ -565,7 +633,7 @@
               </div>
             </section>
 
-            {/* ===== Hours-only Report (Filtered) ===== */}
+            {/* ===== Hours-only Report (Sorting Added) ===== */}
             <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-x-auto">
               <h2 className="font-semibold mb-4">Hours Report (Filtered)</h2>
               <table className="min-w-full text-sm">
@@ -619,17 +687,14 @@
               </div>
             </section>
 
-            {/* ===== Shifts split: Inputs & Earnings ===== */}
+            {/* ===== Shifts split: Inputs & Earnings (Sorting Added) ===== */}
             <section className="bg-white rounded-2xl shadow p-4 mb-6 overflow-x-auto">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-semibold">Shifts — Inputs (Filtered)</h2>
                 {activeUrl ? (
-                  <div className="no-print flex gap-2">
-                    <button onClick={loadFromSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100 flex-shrink-0">Load from Sheets</button>
-                    <button onClick={saveNewToSheets} className="px-3 py-1.5 rounded-xl border bg-white hover:bg-slate-100 flex-shrink-0">Save NEW to Sheets</button>
-                  </div>
+                  <div className="no-print text-xs text-slate-500">(Auto-Sync is ON)</div>
                 ) : (
-                  <div className="text-xs text-slate-500 no-print flex-shrink-0">(Paste your Sheets URL above to enable syncing)</div>
+                  <div className="text-xs text-slate-500 no-print flex-shrink-0">(Paste your Sheets URL above to enable auto-sync)</div>
                 )}
               </div>
               <table className="min-w-max text-sm mb-8">
@@ -693,6 +758,7 @@
                             {key: 'hours', label: 'Hours'},
                             {key: 'hourlyPay', label: 'Hourly Pay'},
                             {key: 'netAcc', label: 'Net Acct Tips'},
+							{key: 'cashTips', label: 'Cash Tips'},
                             {key: 'netBig', label: 'Net Big Bills'},
                             {key: 'prod', label: 'Prod Comm'},
                             {key: 'total', label: 'Shift Total'},
@@ -717,17 +783,18 @@
                       <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
                       <td className="py-2 pr-3">{hourly.toFixed(2)}</td>
                       <td className="py-2 pr-3">{netAcc.toFixed(2)}</td>
+					  <td className="py-2 pr-3">{s.cashTips.toFixed(2)}</td>
                       <td className="py-2 pr-3">{netBig.toFixed(2)}</td>
                       <td className="py-2 pr-3">{prod.toFixed(2)}</td>
                       <td className="py-2 pr-3 font-medium">{total.toFixed(2)}</td>
                     </tr>
                   );})}
-                  {sortedShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="10">No shifts in this range.</td></tr>)}
+                  {sortedShifts.length===0 && (<tr><td className="py-6 text-slate-500" colSpan="11">No shifts in this range.</td></tr>)}
                 </tbody>
               </table>
             </section>
 
-            {/* ===== Google Sheets Settings (Unchanged) ===== */}
+            {/* ===== Google Sheets Settings (Save Logic Updated) ===== */}
             <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
               <h2 className="font-semibold mb-1">Google Sheets Sync (optional)</h2>
               <p className="text-xs text-slate-600 mb-3">Paste your Apps Script Web App URL and token. Saved to this browser. (Headers in your Sheet must be exactly: <code>id | date | start | end | tipsAccount | cashTips | bigBills | products | notes</code>.)</p>
