@@ -278,6 +278,9 @@
       const [from, setFrom] = useState(() => localStorage.getItem('filter_from') || defaultFrom);
       const [to, setTo] = useState(() => localStorage.getItem('filter_to') || defaultTo);
 
+	  // NEW STATE: Tracks which quick-select button is active for highlighting
+      const [activeFilter, setActiveFilter] = useState('none'); 
+
       // Save filters to localStorage whenever they change
       useEffect(() => {
         localStorage.setItem('filter_from', from);
@@ -559,22 +562,58 @@
               </div>
             </section>
 
-            {/* ===== Report Filters (Filter Persistence Added) ===== */}
+           {/* ===== Report Filters (Filter Persistence and Highlighting Added) ===== */}
             <section className="no-print bg-white rounded-2xl shadow p-4 mb-6">
               <h2 className="font-semibold mb-4">Report Filters</h2>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
-                <div className="col-span-1"><label className="block text-sm mb-1">From</label><input type="date" value={from} onChange={e=>setFrom(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
-                <div className="col-span-1"><label className="block text-sm mb-1">To</label><input type="date" value={to} onChange={e=>setTo(e.target.value)} className="w-full border rounded-xl px-3 py-2" /></div>
+                <div className="col-span-1">
+                    <label className="block text-sm mb-1">From</label>
+                    <input 
+                        type="date" 
+                        value={from} 
+                        onChange={e=>{setFrom(e.target.value); setActiveFilter('none');}} 
+                        className="w-full border rounded-xl px-3 py-2" 
+                    />
+                </div>
+                <div className="col-span-1">
+                    <label className="block text-sm mb-1">To</label>
+                    <input 
+                        type="date" 
+                        value={to} 
+                        onChange={e=>{setTo(e.target.value); setActiveFilter('none');}} 
+                        className="w-full border rounded-xl px-3 py-2" 
+                    />
+                </div>
                 <div className="flex flex-wrap gap-2 col-span-2 md:col-span-4"> 
-                  <button onClick={()=>{setFrom(firstOfMonthISO()); setTo(lastOfMonthISO());}} className="px-3 py-2 rounded-2xl border bg-slate-900 text-white hover:bg-slate-800 flex-grow">This Month</button>
-                  <button onClick={()=>{const now=new Date(); const prev=new Date(now.getFullYear(), now.getMonth()-1, 1); setFrom(firstOfMonthISO(prev)); setTo(lastOfMonthISO(prev));}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">Last Month</button>
-                  <button onClick={()=>{const now=new Date(); setFrom(`${now.getFullYear()}-01-01`); setTo(todayISO());}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">YTD</button>
-                  <button onClick={()=>{setFrom(""); setTo("");}} className="px-3 py-2 rounded-2xl border bg-white hover:bg-slate-100 flex-grow">All Time</button>
+                  
+                  {/* This Month */}
+                  <button onClick={()=>{setFrom(firstOfMonthISO()); setTo(lastOfMonthISO()); setActiveFilter('thisMonth');}} 
+                          className={`px-3 py-2 rounded-2xl border flex-grow ${activeFilter === 'thisMonth' ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-white hover:bg-slate-100"}`}>
+                      This Month
+                  </button>
+                  
+                  {/* Last Month */}
+                  <button onClick={()=>{const now=new Date(); const prev=new Date(now.getFullYear(), now.getMonth()-1, 1); setFrom(firstOfMonthISO(prev)); setTo(lastOfMonthISO(prev)); setActiveFilter('lastMonth');}} 
+                          className={`px-3 py-2 rounded-2xl border flex-grow ${activeFilter === 'lastMonth' ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-white hover:bg-slate-100"}`}>
+                      Last Month
+                  </button>
+                  
+                  {/* YTD */}
+                  <button onClick={()=>{const now=new Date(); setFrom(`${now.getFullYear()}-01-01`); setTo(todayISO()); setActiveFilter('ytd');}} 
+                          className={`px-3 py-2 rounded-2xl border flex-grow ${activeFilter === 'ytd' ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-white hover:bg-slate-100"}`}>
+                      YTD
+                  </button>
+                  
+                  {/* All Time */}
+                  <button onClick={()=>{setFrom(""); setTo(""); setActiveFilter('allTime');}} 
+                          className={`px-3 py-2 rounded-2xl border flex-grow ${activeFilter === 'allTime' ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-white hover:bg-slate-100"}`}>
+                      All Time
+                  </button>
                 </div>
               </div>
               <p className="text-xs text-slate-500 mt-2">{filteredShifts.length} shift(s) in range.</p>
             </section>
-
+			  
             {/* ===== Totals & Monthly under Filters (Net Total Added) ===== */}
             <section className="grid md:grid-cols-2 gap-6 mb-6">
               <div className="bg-white rounded-2xl shadow p-4">
