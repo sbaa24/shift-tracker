@@ -146,7 +146,7 @@
 	
     // Custom hook for Monthly Breakdown sorting (Unchanged, stable)
     function useSortableMonthly(items) {
-      const [sortConfig, setSortConfig] = useState({ key: 0, direction: 'ascending' }); 
+      const [sortConfig, setSortConfig] = useState({ key: 0, direction: 'descending' }); 
 
       const sortedItems = useMemo(() => {
         let sortableItems = [...items];
