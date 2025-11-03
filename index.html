@@ -55,6 +55,8 @@
     function todayISO(){ return new Date().toISOString().slice(0,10); }
     function firstOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth(),1); return x.toISOString().slice(0,10); }
     function lastOfMonthISO(d=new Date()){ const x=new Date(d.getFullYear(),d.getMonth()+1,0); return x.toISOString().slice(0,10); }
+	// NEW HELPER: Formats date from YYYY-MM-DD to DD-MM-YY
+	function formatDateDisplay(dateISO){if(!dateISO) return ''; const parts = dateISO.split('-'); if (parts.length !== 3) return dateISO; const [year, month, day] = parts; return `${day}-${month}-${year.slice(2)}`; }
 
     // ====== Sorting Logic (Corrected) ======
 
@@ -347,7 +349,7 @@
           map.set(s.date,(map.get(s.date)||0)+total);
         }
         const dates=Array.from(map.keys()).sort();
-        return {labels:dates, values:dates.map(d=>map.get(d))};
+        return {labels:dates.map(formatDateDisplay), values:dates.map(d=>map.get(d))};
       },[filteredShifts]);
       const composition=useMemo(()=>({labels:["Hourly Pay","Net Account Tips","Cash Tips","Net Big Bills","Product Commission"], values:[totals.hourlyPay,totals.netAcc,totals.cash,totals.netBig,totals.prod]}),[totals]);
       const lineRef=useRef(null), pieRef=useRef(null);
@@ -661,7 +663,7 @@
                   {sortedShifts.map(s=>{ const hrs=hoursBetween(s.start,s.end); return (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
-                      <td className="py-2 pr-3">{s.date}</td>
+                      <td className="py-2 pr-3">{formatDateDisplay(s.date)}</td>
                       <td className="py-2 pr-3">{s.start}</td>
                       <td className="py-2 pr-3">{s.end}</td>
                       <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
@@ -727,7 +729,7 @@
                   {sortedShifts.map((s)=> (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
-                      <td className="py-2 pr-3">{s.date}</td>
+                      <td className="py-2 pr-3">{formatDateDisplay(s.date)}</td>
                       <td className="py-2 pr-3">{s.start}</td>
                       <td className="py-2 pr-3">{s.end}</td>
                       <td className="py-2 pr-3">{s.tipsAccount}</td>
@@ -777,7 +779,7 @@
                   {sortedShifts.map((s)=>{const hrs=hoursBetween(s.start,s.end); const hourly=hrs*HOURLY_RATE; const netAcc=s.tipsAccount*0.85; const netBig=s.bigBills*0.10; const prod=s.products*1; const total=hourly+netAcc+netBig+s.cashTips+prod; return (
                     <tr key={s.id} className="border-b last:border-0">
                       <td className="py-2 pr-3">{dayLabel(s.date)}</td>
-                      <td className="py-2 pr-3">{s.date}</td>
+                      <td className="py-2 pr-3">{formatDateDisplay(s.date)}</td>
                       <td className="py-2 pr-3">{s.start}</td>
                       <td className="py-2 pr-3">{s.end}</td>
                       <td className="py-2 pr-3">{hrs.toFixed(2)}</td>
